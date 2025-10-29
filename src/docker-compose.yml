@@ -1,0 +1,67 @@
+# Images are pinned to specific versions to prevent re-pulls
+version: '3.8'
+services:
+
+  postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: changeme
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:8.10
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  train:
+    build:
+      context: .
+      dockerfile: train/dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: postgres://appuser:changeme@postgres:5432/appdb
+      PYTHONPATH: /app
+    working_dir: /app
+    volumes:
+      - shared_models:/app/models
+    depends_on:
+      - redis
+      - postgres
+
+  api:
+    build:
+      context: .
+      dockerfile: api/dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: postgres://appuser:changeme@postgres:5432/appdb
+      PYTHONPATH: /app
+    working_dir: /app
+    ports:
+    - 8000:8000
+    volumes:
+      - shared_models:/app/models
+    depends_on:
+      - redis
+      - postgres
+
+volumes:
+  pgdata:
+  shared_models:

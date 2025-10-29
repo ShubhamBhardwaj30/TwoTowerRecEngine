@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy API requirements and install
+COPY api/requirements.txt requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Copy API code
+COPY api/ api/
+# Copy db helper
+COPY db/ db/
+
+COPY train/two_tower.py api/
+
+ENV PYTHONPATH=/app
+
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

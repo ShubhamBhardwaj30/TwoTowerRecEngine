@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sentence-transformers
+numpy
+pandas
+redis
+psycopg2-binary
+lightgbm
+scikit-learn

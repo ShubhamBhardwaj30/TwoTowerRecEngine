@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from sklearn.model_selection import train_test_split
-
+from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
 
 ### 2️⃣ Simulate Users and Posts
 np.random.seed(42)
@@ -126,12 +126,23 @@ posts = torch.tensor(df[post_cont_features].to_numpy(np.float32))
 labels = torch.tensor(df['label'].to_numpy(np.float32))
 
 
+#create train test sets
+train_idx, test_idx = train_test_split(range(len(labels)),test_size=0.2, random_state=42 )
+
+user_train = users[train_idx]
+user_test = users[test_idx]
+
+post_train = posts[train_idx]
+post_test = posts[test_idx]
+
+label_train = labels[train_idx]
+label_test = labels[test_idx]
+
 #create the model class
 
-class Model(nn.Module):
-    
-    def __init__(self, user_input_dim, post_input_dim, hidden_dim=32, drop_out_rate=0.2):
-        super().__init__()
+class TwoTowerModel(nn.Module):
+    def __init__(self, user_input_dim, post_input_dim, hidden_dim=64, drop_out_rate=0.2):
+        super(TwoTowerModel, self).__init__()
         self.user_tower = nn.Sequential(
             nn.Linear(user_input_dim, hidden_dim),
             nn.ReLU(),
@@ -148,62 +159,76 @@ class Model(nn.Module):
         )
 
     def forward(self, user_data, post_data):
-        user_embedding = self.user_tower(user_data)
-        post_embedding = self.post_tower(post_data) 
-        scores = (user_embedding * post_embedding).sum(dim=1)
-        pred = torch.sigmoid(scores)
-        return pred
+        user_emb = self.user_tower(user_data)
+        post_emb = self.post_tower(post_data)
+        scores = (user_emb * post_emb).sum(dim=1)  # raw logits
+        return scores
 
-#create train test sets
-train_idx, test_idx = train_test_split(range(len(labels)),test_size=0.2, random_state=42 )
+# --- Initialize model ---
+hidden_dim = 64
+model = TwoTowerModel(user_input_dim=user_train.shape[1],
+                      post_input_dim=post_train.shape[1],
+                      hidden_dim=hidden_dim,
+                      drop_out_rate=0.2)
 
-user_train = users[train_idx]
-user_test = users[test_idx]
+# --- Device ---
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
+user_train = user_train.float().to(device)
+post_train = post_train.float().to(device)
+label_train = label_train.float().to(device)
+user_test = user_test.float().to(device)
+post_test = post_test.float().to(device)
+label_test = label_test.float().to(device)
 
-post_train = posts[train_idx]
-post_test = posts[test_idx]
+# --- Handle class imbalance ---
+pos_weight = torch.tensor([(label_train==0).sum() / (label_train==1).sum()]).to(device)
+criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-label_train = labels[train_idx]
-label_test = labels[test_idx]
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+epochs = 50
 
-
-#train the model
-epochs = 500
-hidden_dims = 64
-
-model = Model(user_input_dim=user_train.shape[1], post_input_dim=post_train.shape[1], hidden_dim=hidden_dims, drop_out_rate=0.2)
-optimizer = optim.Adam(model.parameters(), lr=0.01)
-criterion = nn.BCELoss()
-losses = []
-for i in range(epochs):
+# --- Training loop ---
+for epoch in range(epochs):
     model.train()
     optimizer.zero_grad()
-
-    pred = model(user_train, post_train)
-    loss = criterion(pred, label_train)
     
-    losses.append(loss)
+    logits = model(user_train, post_train)
+    loss = criterion(logits, label_train)
     loss.backward()
     optimizer.step()
-
-#evaluate the model
+    
+    # Evaluation
     model.eval()
     with torch.no_grad():
-        test_pred = model(user_test, post_test)
-        test_loss = criterion(test_pred, label_test)
+        test_logits = model(user_test, post_test)
+        test_loss = criterion(test_logits, label_test)
+        test_probs = torch.sigmoid(test_logits)  # probabilities for inspection
     
-    if i % 10 == 0:
-        print(f"Train loss: {loss}, test loss: {test_loss}")
+    if epoch % 10 == 0:
+        print(f"Epoch {epoch+1}: Train loss = {loss.item():.4f}, Test loss = {test_loss.item():.4f}")
 
-# print(test_pred[0])
-# print(label_test[0])
-
+# --- Create DataFrame with predictions ---
 df_results = pd.DataFrame({
-    'user_id': df.loc[test_idx, 'user_id'].values,       
-    'post_id': df.loc[test_idx, 'post_id'].values,    
-    'predicted': test_pred.detach().numpy(),  # convert tensor to numpy
-    'actual': label_test.detach().numpy()
+    'user_id': df.loc[test_idx, 'user_id'].values,
+    'post_id': df.loc[test_idx, 'post_id'].values,
+    'predicted_prob': test_probs.cpu().numpy(),
+    'actual': label_test.cpu().numpy()
 })
 
-print(df_results.head())
-print(df_results[df_results['predicted']!= 0.5])
+# --- Convert predictions to binary labels using your threshold ---
+threshold = 0.45
+pred_labels = (df_results['predicted_prob'] >= threshold).astype(int)
+true_labels = df_results['actual'].values
+
+# --- Compute metrics ---
+precision = precision_score(true_labels, pred_labels)
+recall = recall_score(true_labels, pred_labels)
+f1 = f1_score(true_labels, pred_labels)
+auc = roc_auc_score(true_labels, df_results['predicted_prob'].values)  # use probabilities for AUC
+
+print(f"Threshold: {threshold}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall:    {recall:.4f}")
+print(f"F1-score:  {f1:.4f}")
+print(f"AUC:       {auc:.4f}")
