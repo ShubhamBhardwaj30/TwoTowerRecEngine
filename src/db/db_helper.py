@@ -71,10 +71,8 @@ class DBHelper:
                     author_following INT,
                     author_posts_last_week INT,
                     is_boosted INT,
-                    post_type_text INT,
-                    post_type_image INT,
-                    post_type_video INT,
-                    """ + ",".join([f"post_time_hour_{i} INT" for i in range(24)]) + """
+                    post_type varchar(8),
+                    post_time_hour DOUBLE PRECISION
                 );
             """)
             cur.execute("""
@@ -183,9 +181,9 @@ class DBHelper:
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT user_id, embedding <=> %s AS distance
+                SELECT user_id, embedding <=> %s::vector AS distance
                 FROM user_embeddings
-                ORDER BY embedding <-> %s
+                ORDER BY embedding <-> %s::vector
                 LIMIT %s
                 """,
                 (embedding, embedding, top_k)
@@ -194,16 +192,27 @@ class DBHelper:
 
     def query_similar_posts_ann(self, embedding, top_k=5):
         # Approximate nearest neighbor search using HNSW index
+        
         with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT post_id, embedding <=> %s AS distance
-                FROM post_embeddings
-                ORDER BY embedding <-> %s
-                LIMIT %s
-                """,
-                (embedding, embedding, top_k)
-            )
+            try:
+                cur.execute(
+                    """
+                    SELECT post_id, embedding <=> %s::vector AS distance
+                    FROM post_embeddings
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT %s
+                    """,
+                    (embedding, embedding, top_k)
+                )
+            except psycopg2.Error as e:
+                # 1. Rollback the transaction to reset the connection state
+                self.conn.rollback() 
+                
+                # 2. Log the error (optional but recommended)
+                print(f"Database error in query_similar_users_ann: {e}")
+                
+                # 3. Re-raise a standard exception so FastAPI can handle it
+                raise ConnectionError("Database query failed after rollback.")
             return cur.fetchall()
 
     def insert_dataframe(self, table_name: str, df):

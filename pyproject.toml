@@ -15,7 +15,8 @@ dependencies = [
     "seaborn (>=0.13.2,<0.14.0)",
     "scikit-learn (>=1.7.2,<2.0.0)",
     "statsmodels (>=0.14.5,<0.15.0)",
-    "psycopg (>=3.2.12,<4.0.0)"
+    "psycopg (>=3.2.12,<4.0.0)",
+    "psycopg2-binary (>=2.9.11,<3.0.0)"
 ]
 
 

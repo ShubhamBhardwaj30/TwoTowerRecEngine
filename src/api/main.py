@@ -25,7 +25,6 @@ app = FastAPI(title="Feed Ranking")
 global model, user_scaler, post_scaler, model_dims
 model = user_scaler = post_scaler = model_dims = None
 
-@app.on_event("startup")
 def load_model():
     global model, user_scaler, post_scaler, model_dims
     model_path = "/app/models/two_tower_model.pth"
@@ -39,12 +38,17 @@ def load_model():
 
     user_dim = model_dims['user_dim']
     post_dim = model_dims['post_dim']
-    hidden_dim = 64
+    hidden_dim = model_dims['hidden_dims']
 
     model = TwoTowerModel(user_dim=user_dim, post_dim=post_dim, hidden_dim=hidden_dim)
     model.load_state_dict(torch.load(model_path, map_location='cpu'))
     model.eval()
     print("Model loaded")
+
+
+@app.on_event("startup")
+def start():
+    load_model()
 
 
 @app.post("/upsert")
@@ -84,19 +88,18 @@ def query(q: QueryRequest):
         return json.loads(cached)
 
     with torch.no_grad():
-        # 1. Raw continuous features
-        user_cont = np.array([
+        # 1. Raw continuous features (only 8 base features)
+        user_base_features = np.array([
             q.age, q.num_friends, q.avg_likes_received, q.avg_comments_received,
             q.avg_shares_received, q.active_days_last_week, q.time_spent_last_week,
             q.num_groups
         ]).reshape(1, -1)  # shape (1,8)
 
-        # 2. Scale continuous features
-        user_cont_scaled = user_scaler.transform(user_cont)  # shape (1,8)
+        # 2. Scale base features
+        user_base_scaled = user_scaler.transform(user_base_features)  # shape (1,8)
 
-        # 3. Append has_profile_picture as 2D
-        has_profile = np.array([[q.has_profile_picture]])  # shape (1,1)
-        user_input_np = np.hstack([user_cont_scaled, has_profile])  # shape (1,9)
+        # 3. Append num_likes and like_ratio as 0.0, and has_profile_picture
+        user_input_np = np.hstack([user_base_scaled, [[0.0, 0.0]], [[q.has_profile_picture]]])  # shape (1,11)
 
         # 4. Convert to tensor
         user_input = torch.tensor(user_input_np, dtype=torch.float32)
@@ -105,9 +108,14 @@ def query(q: QueryRequest):
         user_emb = model.user_tower(user_input).detach().numpy()[0]
             
 
-    results = db_helper.query_similar_posts(user_emb.tolist(), top_k=q.top_k)
-    hits = [{"post_id": int(r[0]), "score": float(r[1])} for r in results]
+    results = db_helper.query_similar_posts_ann(user_emb.tolist(), top_k=q.top_k)
+    # print(results)
+    hits = [{"post_id": int(r[0]), "similarity_distance": round(float(r[1]), 4)} for r in results]
 
     out = {"hits": hits}
     r.set(cache_key, json.dumps(out), ex=60)
     return out
+
+@app.get("/reload")
+def reload():
+    load_model()

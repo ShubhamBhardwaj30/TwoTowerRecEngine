@@ -10,6 +10,46 @@ import torch
 import joblib
 import os
 from db.db_helper import DBHelper
+import gc
+
+
+def sanitize_dataframe(df: pd.DataFrame):
+    """
+    Ensure all DataFrame columns have native Python types compatible with psycopg2:
+    - bool → int
+    - NumPy integers → int
+    - NumPy floats → float
+    - Others → str
+    """
+    for col in df.columns:
+        # Booleans
+        if df[col].dtype == 'bool' or df[col].dtype.name == 'boolean':
+            df[col] = df[col].astype(int).values.tolist()
+        # NumPy integers
+        elif np.issubdtype(df[col].dtype, np.integer):
+            df[col] = [int(x) for x in df[col].to_numpy()]
+        # NumPy floats
+        elif np.issubdtype(df[col].dtype, np.floating):
+            df[col] = [float(x) for x in df[col].to_numpy()]
+        # Objects/strings
+        else:
+            df[col] = df[col].astype(str).values.tolist()
+    return df
+
+def sanitize_regular_dataframe(df: pd.DataFrame):
+    """
+    Robustly convert all boolean and NumPy scalar types to native Python types
+    for psycopg2 compatibility without affecting the rest of the code.
+    Ensure 'label' column remains numeric.
+    """
+    for col in df.columns:
+        if col == 'label':
+            df[col] = df[col].astype(int)
+        else:
+            df[col] = df[col].apply(lambda x: int(x) if isinstance(x, (bool, np.bool_, np.integer))
+                                                    else float(x) if isinstance(x, (np.floating,))
+                                                    else str(x))
+    return df
 
 
 def setup():
@@ -46,6 +86,14 @@ def setup():
         'post_time_hour': np.random.randint(0,24,size=num_posts),
         'is_boosted': np.random.randint(0,2,size=num_posts)
     })
+
+    POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "postgresql://appuser:changeme@postgres:5432/appdb")
+    db_helper = DBHelper(POSTGRES_DSN)
+    db_helper.clear_post_raw()
+    db_helper.clear_user_raw()
+    db_helper.insert_dataframe('users_raw', sanitize_dataframe(user_df))
+    db_helper.insert_dataframe('posts_raw', sanitize_dataframe(post_df))
+
     ### 3️⃣ Feature Engineering
 
     # - 3a: Normalize continuous features
@@ -65,7 +113,8 @@ def setup():
     interactions = []
     for user_id in range(num_users):
         liked_posts = np.random.choice(num_posts, size=20, replace=False)
-        for post_id in range(num_posts):
+        sampled_posts = np.random.choice(num_posts, size=200, replace=False)
+        for post_id in sampled_posts:
             interactions.append({
                 'user_id': user_id,
                 'post_id': post_id,
@@ -73,12 +122,45 @@ def setup():
             })
     df = pd.DataFrame(interactions)
     interactions_df = df.copy()
-    df = df.merge(user_df, on='user_id', how='left')
+
+    # Ensure consistent types for merging
+    interactions_df['user_id'] = interactions_df['user_id'].astype(int)
+    interactions_df['post_id'] = interactions_df['post_id'].astype(int)
+    user_df['user_id'] = user_df['user_id'].astype(int)
+    post_df['post_id'] = post_df['post_id'].astype(int)
+    df['user_id'] = df['user_id'].astype(int)
+    df['post_id'] = df['post_id'].astype(int)
+
+    
+    db_helper.clear_interactions_raw()
+    db_helper.insert_dataframe('interactions_raw', sanitize_regular_dataframe(interactions_df))
+
+
+    # Example interaction-based features for users
+    interaction_scaler = StandardScaler()
+    user_interactions = interactions_df.groupby('user_id')['label'].agg(['sum', 'mean']).reset_index()
+    user_interactions = user_interactions.astype({'user_id': int, 'sum': float, 'mean': float})
+    user_interactions.rename(columns={'sum':'num_likes','mean':'like_ratio'}, inplace=True)
+    user_interaction_df = user_df.merge(user_interactions, on='user_id', how='left')
+    user_interaction_df['num_likes'] = user_interaction_df['num_likes'].fillna(0).astype(float)
+    user_interaction_df['like_ratio'] = user_interaction_df['like_ratio'].fillna(0).astype(float)
+    user_interaction_cont_features = user_cont_features + ['num_likes','like_ratio'] 
+    
+
+    user_interaction_df[['num_likes','like_ratio']] = interaction_scaler.fit_transform(user_interaction_df[['num_likes','like_ratio']])
+
+    df = df.merge(user_interaction_df, on='user_id', how='left')
     df = df.merge(post_df, on='post_id', how='left')
     df = df.reset_index(drop=True)
 
+    # Enforce consistent types after merge and reset_index
+    df['user_id'] = df['user_id'].astype(int)
+    df['post_id'] = df['post_id'].astype(int)
+    df['has_profile_picture'] = df['has_profile_picture'].astype(float)
+    df['label'] = df['label'].astype(int)
+
     # create user and post tensors
-    users = torch.tensor(df[user_cont_features + ['has_profile_picture']].to_numpy(np.float32))
+    users = torch.tensor(df[user_interaction_cont_features + ['has_profile_picture']].to_numpy(np.float32))
     posts = torch.tensor(df[post_cont_features].to_numpy(np.float32))
     labels = torch.tensor(df['label'].to_numpy(np.float32))
 
@@ -95,7 +177,7 @@ def setup():
     label_train = labels[train_idx]
     label_test = labels[test_idx]
 
-    return user_train, post_train, label_train, user_test, post_test, label_test, user_scaler, post_scaler, user_df, post_df,interactions_df 
+    return user_train, post_train, label_train, user_test, post_test, label_test, user_scaler, post_scaler, df, train_idx, user_interaction_df, user_interaction_cont_features
 
 def run(user_train, post_train, label_train, user_test, post_test, label_test, epochs=50 ):
     hidden_dims = 64
@@ -108,9 +190,10 @@ def run(user_train, post_train, label_train, user_test, post_test, label_test, e
     
     pos_weight = torch.tensor([(label_train==0).sum() / (label_train==1).sum()])
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
 
     for epoch in range(epochs):
+        
         model.train()
         optimizer.zero_grad()
         
@@ -131,8 +214,9 @@ def run(user_train, post_train, label_train, user_test, post_test, label_test, e
     with torch.no_grad():
         user_embeddings = model.user_tower(user_train)
         post_embeddings = model.post_tower(post_train)
-
-    return model, user_embeddings, post_embeddings, user_dim, post_dim
+    torch.cuda.empty_cache()
+    gc.collect()
+    return model, user_embeddings, post_embeddings, user_dim, post_dim, hidden_dims
 
 def serialize(model, user_scaler, post_scaler, model_path="/app/models/two_tower_model.pth", 
               user_scaler_path="/app/models/user_scaler.pkl", post_scaler_path="/app/models/post_scaler.pkl"):
@@ -147,43 +231,29 @@ def serialize(model, user_scaler, post_scaler, model_path="/app/models/two_tower
     print(f"User scaler saved at {user_scaler_path}")
     print(f"Post scaler saved at {post_scaler_path}")
 
-def sanitize_dataframe(df: pd.DataFrame):
-    """
-    Ensure all DataFrame columns have native Python types compatible with psycopg2:
-    - bool → int
-    - NumPy integers → int
-    - NumPy floats → float
-    - Others → str
-    """
-    for col in df.columns:
-        # Booleans
-        if df[col].dtype == 'bool' or df[col].dtype.name == 'boolean':
-            df[col] = df[col].astype(int).values.tolist()
-        # NumPy integers
-        elif np.issubdtype(df[col].dtype, np.integer):
-            df[col] = [int(x) for x in df[col].to_numpy()]
-        # NumPy floats
-        elif np.issubdtype(df[col].dtype, np.floating):
-            df[col] = [float(x) for x in df[col].to_numpy()]
-        # Objects/strings
-        else:
-            df[col] = df[col].astype(str).values.tolist()
-    return df
+def evaluate_model(model, user_test, post_test, label_test):
+    model.eval()
+    with torch.no_grad():
+        logits = model(user_test, post_test)
+        probs = torch.sigmoid(logits).cpu().numpy()
+        labels = label_test.cpu().numpy()
+        # Simple evaluation metrics
+        preds = (probs >= 0.5).astype(int)
+        accuracy = (preds == labels).mean()
+        auc = None
+        try:
+            from sklearn.metrics import roc_auc_score
+            auc = roc_auc_score(labels, probs)
+        except:
+            pass
+        print(f"Evaluation: Accuracy = {accuracy:.4f}" + (f", AUC = {auc:.4f}" if auc is not None else ""))
 
-def sanitize_regular_dataframe(df: pd.DataFrame):
-    """
-    Robustly convert all boolean and NumPy scalar types to native Python types
-    for psycopg2 compatibility without affecting the rest of the code.
-    """
-    for col in df.columns:
-        df[col] = df[col].apply(lambda x: int(x) if isinstance(x, (bool, np.bool_, np.integer)) 
-                                                else float(x) if isinstance(x, (np.floating,)) 
-                                                else str(x))
-    return df
 
 if __name__ == '__main__':
-    user_train, post_train, label_train, user_test, post_test, label_test, user_scaler, post_scaler, user_df, post_df,interactions_df  = setup()
-    model, user_embeddings, post_embeddings, user_dim, post_dim = run(user_train, post_train, label_train, user_test, post_test, label_test)
+
+    user_train, post_train, label_train, user_test, post_test, label_test, user_scaler, post_scaler, df, train_idx, user_interaction_df, user_interaction_cont_features  = setup()
+    model, user_embeddings, post_embeddings, user_dim, post_dim, hidden_dims = run(user_train, post_train, label_train, user_test, post_test, label_test, epochs=50)
+    evaluate_model(model, user_test, post_test, label_test)
     serialize(model=model, user_scaler=user_scaler, post_scaler=post_scaler)
 
     # insert the embeddings into the db.
@@ -192,30 +262,40 @@ if __name__ == '__main__':
     # Clear existing embeddings
     db_helper.clear_user_embeddings()
     db_helper.clear_post_embeddings()
-    db_helper.clear_post_raw()
-    db_helper.clear_user_raw()
-    db_helper.clear_interactions_raw()
+    
 
-    # Prepare user embeddings for batch insert
-    user_emb_np = user_embeddings.detach().cpu().numpy()
-    user_ids = np.arange(user_emb_np.shape[0])
-    user_records = [(int(uid), emb.astype(np.float32).tolist()) for uid, emb in zip(user_ids, user_emb_np)]
+    # Prepare user embeddings for batch insert (insert each unique user once)
+    # Use user_interaction_cont_features to match the features used in training
+    user_emb_np = model.user_tower(torch.tensor(user_interaction_df[user_interaction_cont_features + ['has_profile_picture']].to_numpy(np.float32)))
+    user_ids_all = user_interaction_df['user_id'].values
+    # Map from user_id to embedding (last occurrence in train set, but all should be same for each user)
+    user_id_to_emb = {}
+    for uid, emb in zip(user_ids_all, user_emb_np.detach().cpu().numpy()):
+        user_id_to_emb[int(uid)] = emb.astype(np.float32)
+    user_records = [(uid, emb.tolist()) for uid, emb in user_id_to_emb.items()]
     db_helper.insert_user_embeddings_batch(user_records)
-    # Prepare post embeddings for batch insert
+
+    # Prepare post embeddings for batch insert (insert each unique post once)
     post_emb_np = post_embeddings.detach().cpu().numpy()
-    post_ids = np.arange(post_emb_np.shape[0])
-    post_records = [(int(pid), emb.astype(np.float32).tolist()) for pid, emb in zip(post_ids, post_emb_np)]
+    post_ids_all = df['post_id'].iloc[train_idx].values
+    post_id_to_emb = {}
+    for pid, emb in zip(post_ids_all, post_emb_np):
+        post_id_to_emb[int(pid)] = emb.astype(np.float32)
+    post_records = [(pid, emb.tolist()) for pid, emb in post_id_to_emb.items()]
     db_helper.insert_post_embeddings_batch(post_records)
 
-    db_helper.insert_dataframe('users_raw', sanitize_dataframe(user_df))
-    db_helper.insert_dataframe('posts_raw', sanitize_dataframe(post_df))
-    db_helper.insert_dataframe('interactions_raw', sanitize_regular_dataframe(interactions_df))
+
 
     model_dims_path = "/app/models/model_dims.pkl"
     model_dims = {
         "user_dim": user_dim,
-        "post_dim": post_dim 
+        "post_dim": post_dim,
+        "hidden_dims": hidden_dims 
     }
 
     joblib.dump(model_dims, model_dims_path)
     print(f"model dimension saved at:   {model_dims_path}")
+
+    print("Report")
+    print(f"STD of user embedding(overall): \t {np.std(user_embeddings.cpu().numpy())}")
+    print(f"STD of post embedding(overall): \t {np.std(post_embeddings.cpu().numpy())}")
