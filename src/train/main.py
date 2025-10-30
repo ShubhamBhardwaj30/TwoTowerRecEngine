@@ -55,7 +55,7 @@ def sanitize_regular_dataframe(df: pd.DataFrame):
 def setup():
     np.random.seed(42)
     num_users = 100
-    num_posts = 200
+    num_posts = 20000
 
 # User features
     user_df = pd.DataFrame({
