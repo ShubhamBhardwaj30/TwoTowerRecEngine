@@ -1,1 +1,2 @@
-# Two Tower recommendation engine for fb/instagram post recommedation to users
+# Two Tower recommendation engine 
+- For fb/instagram post recommendation to users
