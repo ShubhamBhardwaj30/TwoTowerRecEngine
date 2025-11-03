@@ -53,32 +53,74 @@ def start():
 
 @app.post("/upsert")
 def upsert_item(item: UpsertItem):
-    with torch.no_grad():
-        # Convert UpsertItem fields to feature vector matching training post_df
-        post_features = np.array([
-            item.post_length,
-            item.num_images,
-            item.num_videos,
-            item.num_hashtags,
-            item.author_followers,
-            item.author_following,
-            item.author_posts_last_week,
-            # One-hot encode post_type
-            1 if item.post_type == 'text' else 0,
-            1 if item.post_type == 'image' else 0,
-            1 if item.post_type == 'video' else 0,
-            # One-hot encode post_time_hour
-            *[1 if item.post_time_hour == i else 0 for i in range(24)],
-            item.is_boosted
-        ], dtype=np.float32)
-        post_input = torch.tensor(post_features).unsqueeze(0)
-        
-        post_emb = model.post_tower(post_input).detach().numpy()[0]
-        post_emb = post_scaler.transform(post_emb.reshape(1, -1))[0].astype(np.float32)
+    """
+    Convert incoming post features to the same feature vector used at training,
+    scale the continuous features with the training scaler, produce a post embedding
+    via the post_tower, and insert the raw embedding into the DB (do NOT scale
+    the embedding itself).
+    """
+    # 1) Continuous features in the same order as training
+    post_cont = np.array([
+        item.post_length,
+        item.num_images,
+        item.num_videos,
+        item.num_hashtags,
+        item.author_followers,
+        item.author_following,
+        item.author_posts_last_week
+    ], dtype=np.float32).reshape(1, -1)  # shape (1, 7)
 
+    # 2) Scale continuous features using the training post_scaler
+    try:
+        post_cont_scaled = post_scaler.transform(post_cont).reshape(-1)  # shape (7,)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"post_scaler.transform failed: {e}")
+
+    # 3) One-hot encode post_type (text, image, video) — same order used during training
+    post_type_ohe = np.array([
+        1 if item.post_type == 'text' else 0,
+        1 if item.post_type == 'image' else 0,
+        1 if item.post_type == 'video' else 0
+    ], dtype=np.float32)
+
+    # 4) One-hot encode post_time_hour (0..23)
+    post_hour_ohe = np.array([1 if item.post_time_hour == i else 0 for i in range(24)], dtype=np.float32)
+
+    # 5) is_boosted (binary)
+    is_boosted = np.array([item.is_boosted], dtype=np.float32)
+
+    # 6) Final feature vector concatenation must match training post_feature ordering
+    post_features = np.concatenate([post_cont_scaled, post_type_ohe, post_hour_ohe, is_boosted]).astype(np.float32)
+
+    # Sanity check: make sure the assembled feature vector length equals post_dim
+    if 'post_dim' in globals():
+        expected = post_dim
+    elif model is not None and hasattr(model, "post_tower"):
+        # derive from loaded model if post_dim not in globals
+        expected = model.post_tower[0].in_features if hasattr(model.post_tower[0], "in_features") else None
+    else:
+        expected = None
+
+    if expected is not None and post_features.shape[0] != expected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Post feature dimension mismatch: expected {expected}, got {post_features.shape[0]}"
+        )
+
+    post_input = torch.tensor(post_features).unsqueeze(0)  # shape (1, post_dim)
+
+    # 7) Produce embedding using the post_tower (do NOT scale/transform the resulting embedding)
+    with torch.no_grad():
+        post_emb = model.post_tower(post_input).detach().cpu().numpy()[0].astype(np.float32)
+
+    # Optional: if you use cosine similarity in DB, you may want to L2-normalize embeddings:
+    # norm = np.linalg.norm(post_emb)
+    # if norm > 0:
+    #     post_emb = (post_emb / norm).astype(np.float32)
+
+    # 8) Insert raw embedding into DB
     db_helper.insert_post_embedding(item.post_id, post_emb.tolist())
     return {"status": "ok", "post_id": item.post_id}
-
 
 @app.post("/query")
 def query(q: QueryRequest):
