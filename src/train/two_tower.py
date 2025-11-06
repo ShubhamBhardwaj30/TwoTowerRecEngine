@@ -21,5 +21,6 @@ class TwoTowerModel(nn.Module):
         post_emb = self.post_tower(post_x)
         scores = (user_emb * post_emb).sum(dim=1)  # raw logits
         return scores
+    
 
 

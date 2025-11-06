@@ -83,6 +83,16 @@ class DBHelper:
                     PRIMARY KEY (user_id, post_id)
                 );
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS interactions_raw_v2 (
+                    user_id INT,
+                    post_id INT,
+                    liked INT,
+                    commented INT,
+                    shared INT,
+                    PRIMARY KEY (user_id, post_id)
+                );
+            """)
             self.conn.commit()
 
     def insert_user_embedding(self, user_id, embedding):
@@ -173,6 +183,10 @@ class DBHelper:
             cur.execute("DELETE FROM interactions_raw;")
             self.conn.commit()    
 
+    def clear_interactions_raw_v2(self):
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM interactions_raw_v2;")
+            self.conn.commit()
     def close(self):
         self.conn.close()
 
@@ -226,3 +240,4 @@ class DBHelper:
         with self.conn.cursor() as cur:
             execute_batch(cur, sql, records)
             self.conn.commit()
+    
