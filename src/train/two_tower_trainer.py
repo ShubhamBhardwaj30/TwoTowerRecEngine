@@ -36,12 +36,13 @@ class TwoTowerTrainer:
         self.model = None
         self.user_embeddings = None
         self.post_embeddings = None
+        self.user_embeddings_test = None
+        self.post_embeddings_test = None
         self.user_dim = None
         self.post_dim = None
-        self.hidden_dims = None
+        self.hidden_dims = 64
 
     def initialize(self):
-        self.data.create()
         self.user_dim = self.user_train.shape[1]
         self.post_dim = self.post_train.shape[1]
 
@@ -85,6 +86,8 @@ class TwoTowerTrainer:
         with torch.no_grad():
             self.user_embeddings = self.model.user_tower(self.user_train)
             self.post_embeddings = self.model.post_tower(self.post_train)
+            self.user_embeddings_test = self.model.user_tower(self.user_test)
+            self.post_embeddings_test = self.model.post_tower(self.post_test)
         torch.cuda.empty_cache()
         gc.collect()
     
@@ -96,6 +99,7 @@ class TwoTowerTrainer:
         Computes ROC-AUC, optimal threshold, accuracy at optimal threshold, and top-k metrics.
         Top-K metrics are computed per user and averaged.
         """
+        print("---------------- Two Tower Eval ----------------------")
         model = self.model
         user_test = self.user_test
         post_test = self.post_test
@@ -176,18 +180,14 @@ class TwoTowerTrainer:
         self.metrics_df = metrics_df
         return metrics_df
 
-    def serialize(self, model_path="/app/models/two_tower_model.pth",
-                  user_scaler_path="/app/models/user_scaler.pkl", post_scaler_path="/app/models/post_scaler.pkl"):
+    def serialize(self, model_path="/app/models/two_tower_model.pth"):
         """
         Serialize the model and scalers to disk. Uses self.model, self.user_scaler, self.post_scaler.
         """
         os.makedirs(os.path.dirname(model_path) or '.', exist_ok=True)
         torch.save(self.model.state_dict(), model_path)
-        joblib.dump(self.user_scaler, user_scaler_path)
-        joblib.dump(self.post_scaler, post_scaler_path)
         print(f"Model saved at {model_path}")
-        print(f"User scaler saved at {user_scaler_path}")
-        print(f"Post scaler saved at {post_scaler_path}")
+        
 
     def get_user_embeddings(self):
         """

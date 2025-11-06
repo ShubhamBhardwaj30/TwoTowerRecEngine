@@ -6,6 +6,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from db.db_helper import DBHelper
 from utils import sanitize_dataframe, sanitize_regular_dataframe
+import joblib
 
 class DataGenerator:
 
@@ -142,7 +143,7 @@ class DataGenerator:
 
         #create train test sets
         self.train_df, self.test_df = train_test_split(self.df, test_size=0.2, random_state=42)
-        train_idx = self.train_df.index
+        self.train_idx = self.train_df.index
 
         # Merge user features into train and test dataframes
         self.train_df = self.train_df.merge(self.user_df, on='user_id', how='left', suffixes=('', '_user'))
@@ -177,3 +178,13 @@ class DataGenerator:
         self.tower_label_test = torch.tensor(self.test_df['label'].to_numpy(dtype=np.float32))
         self.mhead_label_test = torch.tensor(self.test_df[label_cols].to_numpy(dtype=np.float32))
 
+    def serialize(self, model_path="/app/models/",
+                  user_scaler_path="/app/models/user_scaler.pkl", post_scaler_path="/app/models/post_scaler.pkl"):
+        """
+        Serialize the model and scalers to disk. Uses self.model, self.user_scaler, self.post_scaler.
+        """
+        os.makedirs(os.path.dirname(model_path) or '.', exist_ok=True)
+        joblib.dump(self.user_scaler, user_scaler_path)
+        joblib.dump(self.post_scaler, post_scaler_path)
+        print(f"User scaler saved at {user_scaler_path}")
+        print(f"Post scaler saved at {post_scaler_path}")
