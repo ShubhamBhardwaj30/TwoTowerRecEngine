@@ -19,8 +19,7 @@ class TwoTowerModel(nn.Module):
     def forward(self, user_x, post_x):
         user_emb = self.user_tower(user_x)
         post_emb = self.post_tower(post_x)
-        scores = (user_emb * post_emb).sum(dim=1)  # raw logits
-        return scores
+        return user_emb, post_emb
     
 
 

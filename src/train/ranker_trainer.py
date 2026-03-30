@@ -1,5 +1,5 @@
 
-from ranker_nn import RankerNN
+from ranker_nn import DLRMRanker
 import torch
 from torch.optim import Adam
 import torch.nn as nn
@@ -47,24 +47,34 @@ class Ranker:
         self.user_emb_map_test = {uid: emb for uid, emb in zip(self.test_df["user_id"], test_user_emb_all)}
         self.post_emb_map_test = {pid: emb for pid, emb in zip(self.test_df["post_id"], test_post_emb_all)}
 
-        # Construct train tensor
+        # EXPERT_NOTE: Extract the new DLRM pathways from the Data Generator
+        # 1. The Dense Data (Age, counts, etc.)
+        self.train_dense = self.data.dlrm_dense_train
+        self.test_dense = self.data.dlrm_dense_test
+        
+        # 2. The Sparse Data (IDs to be hashed)
+        self.train_sparse = self.data.dlrm_sparse_train
+        self.test_sparse = self.data.dlrm_sparse_test
+
+        # 3. Construct tower tensor (The V1 Two-Tower features used as additional signals)
         user_emb_array = np.vstack([self.user_emb_map[uid] for uid in self.train_df["user_id"]])
         post_emb_array = np.vstack([self.post_emb_map[pid] for pid in self.train_df["post_id"]])
-        train_inputs = np.hstack([user_emb_array, post_emb_array])
-        self.train_set = torch.tensor(train_inputs, dtype=torch.float32)
+        # Stack into (Batch, 2, Emb_Dim) so DLRM can isolate them for dot-product
+        train_tower = np.stack([user_emb_array, post_emb_array], axis=1)
+        self.train_tower = torch.tensor(train_tower, dtype=torch.float32)
 
-        # Construct test tensor
-        user_emb_array = np.vstack([self.user_emb_map_test[uid] for uid in self.test_df["user_id"]])
-        post_emb_array = np.vstack([self.post_emb_map_test[pid] for pid in self.test_df["post_id"]])
-        test_inputs = np.hstack([user_emb_array, post_emb_array])
-        self.test_set = torch.tensor(test_inputs, dtype=torch.float32)
+        user_emb_array_test = np.vstack([self.user_emb_map_test[uid] for uid in self.test_df["user_id"]])
+        post_emb_array_test = np.vstack([self.post_emb_map_test[pid] for pid in self.test_df["post_id"]])
+        test_tower = np.stack([user_emb_array_test, post_emb_array_test], axis=1)
+        self.test_tower = torch.tensor(test_tower, dtype=torch.float32)
 
-        self.input_dims = self.train_set.shape[1]
+        self.num_dense_features = self.train_dense.shape[1]
         self.output_dims = self.label_train.shape[1]
-        self.model = RankerNN(
-            input_dims=self.input_dims,
+        
+        # Initialize the true Meta architecture
+        self.model = DLRMRanker(
+            num_dense_features=self.num_dense_features,
             output_dims=self.output_dims,
-            hidden_dims=self.hidden_dims,
             dropout=self.drop_out
         )
 
@@ -80,21 +90,22 @@ class Ranker:
         for e in range(epoch):
             self.model.train()
             optimizer.zero_grad()
-            logits = self.model(self.train_set)
+            # DLRM requires three disparate pathways
+            logits = self.model(self.train_dense, self.train_sparse, self.train_tower)
             loss = criterion(logits, self.label_train)
             loss.backward()
             optimizer.step()
 
             self.model.eval()
             with torch.no_grad():
-                test_logits = self.model(self.test_set)
+                test_logits = self.model(self.test_dense, self.test_sparse, self.test_tower)
                 test_loss = criterion(test_logits, self.label_test)
 
             if e % 10 == 0:
                 print(f"Epoch {e+1}: Train loss = {loss.item():.4f}, Test loss = {test_loss.item():.4f}")
         
 
-    def serialize(self, model_path="/app/models/ranker.pth"):
+    def serialize(self, model_path="./models/ranker.pth"):
         """
         Serialize the model and scalers to disk. Uses self.model, self.user_scaler, self.post_scaler.
         """
@@ -119,7 +130,7 @@ class Ranker:
         head_names = ['liked', 'commented', 'shared']
         model.eval()
         with torch.no_grad():
-            logits = model(test_set)
+            logits = model(self.test_dense, self.test_sparse, self.test_tower)
             probs = torch.sigmoid(logits).cpu().numpy()
             logits_np = logits.cpu().numpy()
             labels = label_test.cpu().numpy()

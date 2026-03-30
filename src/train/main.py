@@ -9,12 +9,20 @@ import torch
 from utils import prepare_embeddings
 
 def main():
-    
+    print("\n========================================================")
+    print("🚀 INIT: Deep Learning Recommendation Pipeline (DLRM)")
+    print("========================================================")
+
     # 1️⃣ Generate Synthetic data
+    print("\n[Stage 1.5] Synthesizing Data (Simulating Lambda Architecture)")
+    print("   => Distinguishing Dense context features from Sparse identity markers...")
     data = DataGenerator()
     data.create()
+    print("   => Synthesized 100 Users and 20,000 Posts.")
 
     # 2️⃣ Train the Two tower model
+    print("\n[Stage 1] Training Two-Tower Model (Retrieval Stage)")
+    print("   => Objective: Map User and Post features into a geometric 64D space to defeat the Cold-Start problem.")
     trainer = TwoTowerTrainer(data)
     trainer.initialize()
     trainer.train(epochs=50, lr=0.05)
@@ -30,12 +38,17 @@ def main():
     user_records, post_records, user_emb_np, post_emb_np = prepare_embeddings(trainer=trainer, data=data)
     
     # 3️⃣ Train the ranking model
+    print("\n[Stage 3] Training Multi-Task DLRM Ranker (Precision Stage)")
+    print("   => Objective: Hashing Sparse IDs and computing Dot-Product Interactions with Dense Bottom MLP outputs.")
     ranker = Ranker(data, trainer)
     ranker.initialize()
     ranker.train(epoch=50, lr=0.05)
+    print("\n   => Executing Re-Ranking Calibration Metrics (ROC-AUC / NDCG)...")
     ranker.evaluate_model()
 
     #  4️⃣ Insert the embeddings into the db.
+    print("\n[System Sync] Pushing Dense Embeddings to PostgreSQL pgvector")
+    print("   => Objective: Making vectors available for K-Means Clustering (IVF) and FAISS Retrieval.")
     POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "postgresql://appuser:changeme@postgres:5432/appdb")
     db_helper = DBHelper(POSTGRES_DSN)
     # Clear existing embeddings
@@ -43,13 +56,15 @@ def main():
     db_helper.clear_post_embeddings()
     db_helper.insert_user_embeddings_batch(user_records)
     db_helper.insert_post_embeddings_batch(post_records)
+    print("   => Vectors injected successfully.")
     
+    print("\n[System Flush] Serializing pipeline components to disk for deployment...")
     data.serialize()
     trainer.serialize()
     ranker.serialize()
 
 
-    model_dims_path = "/app/models/model_dims.pkl"
+    model_dims_path = "./models/model_dims.pkl"
     model_dims = {
         "user_dim": trainer.user_dim,
         "post_dim": trainer.post_dim,

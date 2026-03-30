@@ -13,6 +13,7 @@ import joblib
 import torch
 import os
 from data_gen import DataGenerator
+from torch.utils.data import DataLoader, TensorDataset
 
 class TwoTowerTrainer:
 
@@ -41,10 +42,23 @@ class TwoTowerTrainer:
         self.user_dim = None
         self.post_dim = None
         self.hidden_dims = 64
+        self.log_q_train = None
 
     def initialize(self):
         self.user_dim = self.user_train.shape[1]
         self.post_dim = self.post_train.shape[1]
+        
+        # Calculate LogQ correction (Sampling Probability)
+        # We count occurrences of each post in the training set
+        post_ids = self.train_df["post_id"].values
+        unique_posts, counts = np.unique(post_ids, return_counts=True)
+        # Probability Q(i) = count(i) / total_interactions
+        probs = counts / len(post_ids)
+        self.log_q_map = {pid: np.log(p + 1e-10) for pid, p in zip(unique_posts, probs)}
+        
+        # Pre-map them for the training tensor to avoid lookups in the loop
+        train_log_q = np.array([self.log_q_map[pid] for pid in self.train_df["post_id"]], dtype=np.float32)
+        self.log_q_train = torch.tensor(train_log_q)
 
     
     def train(self, epochs=50, lr=0.05):
@@ -64,30 +78,60 @@ class TwoTowerTrainer:
         self.user_test, self.post_test, self.label_test = self.user_test.to(device), self.post_test.to(device), self.tower_label_test.to(device)
 
         ratio = (self.label_train==0).sum() / (self.label_train==1).sum()
-        pos_weight = torch.tensor([min(ratio, 10.0)]).to(device)
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        
+        # Batching setup
+        batch_size = 512
+        # We only train on positive interactions for pure in-batch softmax
+        pos_mask = (self.label_train == 1)
+        train_dataset = TensorDataset(
+            self.user_train[pos_mask], 
+            self.post_train[pos_mask],
+            self.log_q_train[pos_mask]
+        )
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        
+        self.temperature = 0.07
+        criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(self.model.parameters(), lr)
 
         for epoch in range(epochs):
             self.model.train()
-            optimizer.zero_grad()
-            logits = self.model(self.user_train, self.post_train)
-            loss = criterion(logits, self.label_train)
-            loss.backward()
-            optimizer.step()
+            total_loss = 0
+            for batch_user, batch_post, batch_logq in train_loader:
+                optimizer.zero_grad()
+                user_emb, post_emb = self.model(batch_user, batch_post)
+                
+                # Similarity matrix (N, N)
+                logits = torch.matmul(user_emb, post_emb.T) / self.temperature
+                
+                # Apply LogQ correction: score = logit - logQ
+                # batch_logq is (N,), we broadcast it across the columns
+                logits = logits - batch_logq.view(1, -1)
+                
+                # Targets are the diagonal indices
+                targets = torch.arange(user_emb.size(0)).to(device)
+                
+                loss = criterion(logits, targets)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+
             # Evaluation
             self.model.eval()
             with torch.no_grad():
-                test_logits = self.model(self.user_test, self.post_test)
-                test_loss = criterion(test_logits, self.label_test)
-                test_probs = torch.sigmoid(test_logits)  # probabilities for inspection
+                u_emb_test, p_emb_test = self.model(self.user_test, self.post_test)
+                # Point-wise logits for validation/evaluation compatibility
+                test_logits = (u_emb_test * p_emb_test).sum(dim=1)
+                test_loss = nn.BCEWithLogitsLoss()(test_logits, self.label_test)
+                
             if epoch % 10 == 0:
-                print(f"Epoch {epoch+1}: Train loss = {loss.item():.4f}, Test loss = {test_loss.item():.4f}")
+                avg_loss = total_loss / len(train_loader)
+                print(f"Epoch {epoch+1}: Train loss = {avg_loss:.4f}, Test loss = {test_loss.item():.4f}")
         with torch.no_grad():
-            self.user_embeddings = self.model.user_tower(self.user_train)
-            self.post_embeddings = self.model.post_tower(self.post_train)
-            self.user_embeddings_test = self.model.user_tower(self.user_test)
-            self.post_embeddings_test = self.model.post_tower(self.post_test)
+            self.user_embeddings, _ = self.model(self.user_train, self.post_train)
+            _, self.post_embeddings = self.model(self.user_train, self.post_train)
+            self.user_embeddings_test, _ = self.model(self.user_test, self.post_test)
+            _, self.post_embeddings_test = self.model(self.user_test, self.post_test)
         torch.cuda.empty_cache()
         gc.collect()
     
@@ -109,7 +153,8 @@ class TwoTowerTrainer:
         user_ids = self.df.loc[test_idx, "user_id"].values
         model.eval()
         with torch.no_grad():
-            logits = model(user_test, post_test)         # raw logits for ranking
+            u_emb, p_emb = model(user_test, post_test)
+            logits = (u_emb * p_emb).sum(dim=1)         # raw logits for ranking
             probs = torch.sigmoid(logits).cpu().numpy()  # for threshold-based metrics
             logits_np = logits.cpu().numpy()            # for ranking/top-k
             labels = label_test.cpu().numpy()
@@ -180,7 +225,7 @@ class TwoTowerTrainer:
         self.metrics_df = metrics_df
         return metrics_df
 
-    def serialize(self, model_path="/app/models/two_tower_model.pth"):
+    def serialize(self, model_path="./models/two_tower_model.pth"):
         """
         Serialize the model and scalers to disk. Uses self.model, self.user_scaler, self.post_scaler.
         """

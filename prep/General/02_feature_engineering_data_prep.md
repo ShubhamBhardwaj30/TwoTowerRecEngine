@@ -32,4 +32,41 @@ When the number of features ($X$ columns) mathematically approaches the number o
 *   **Principal Component Analysis (PCA):** A mathematical projection that condenses thousands of correlated features down into a few dense "Principal Components" while preserving the maximum amount of original statistical **Variance**.
     *   *Pro:* Massively shrinks computation time and defeats the Curse of Dimensionality.
     *   *Con (Loss of Explainability):* The new Principal Components ($PC_1$, $PC_2$) are purely mathematical linear combinations of the original data. They no longer represent independent, real-world concepts. You sacrifice **Interpretability** for execution speed.
-*   **Feature Selection (Best Practice):** Blindly throwing all available data through PCA is often a lazy last resort. Advanced ML practitioners prefer aggressive early Feature Selection—actively identifying and keeping only the real-world features that physically influence the Target Variable (using techniques like L1 Regularization to drive bad features to zero, or Tree Feature Importance tracking).
+
+***
+
+## 4. Feature Engineering Methods by Data Type
+
+### A. Numerical Data
+*   **Scaling:** `StandardScaler` (Z-score), `MinMaxScaler`, `RobustScaler` (ignores outliers).
+*   **Skewness Fix:** `Log-1 transform` (for positive numbers), `Box-Cox` or `Yeo-Johnson` (handles all numbers).
+*   **Binning (Discretization):** Converting numbers into categories (e.g., `Age` to `Age_Group`) using Quantile or Equal-width bins.
+*   **Polynomial Interaction:** Create $x_1 \times x_2$ or $x^2$ to capture non-linearities.
+
+### B. Categorical Data
+*   **Nominal (No Order):** One-Hot Encoding, Label Encoding, Frequency Encoding (replacing string with its occurrence count).
+*   **Ordinal (Ordered):** Integer mapping to preserve rank (e.g. `Low=0, Medium=1, High=2`).
+*   **High-Cardinality:** Target Encoding, Hash Encoding (Modulo Hashing to a fixed vector size), Leave-One-Out Encoding.
+*   **Rare Category Grouping:** Combining items with $<1%$ frequency into an "OTHER" bucket to prevent overfitting.
+
+### C. Text Data
+*   **Vectorization:** `TF-IDF` (Term Frequency-Inverse Document Frequency) or `Bag-of-Words`.
+*   **Dense Embeddings:** `BERT`, `Word2Vec`, `GloVe`, or custom fine-tuned Transformer-based vectors.
+*   **Linguistic Features:** Character count, Word count, Punctuation density, Parts-of-Speech (POS) tagging.
+*   **Cleaning:** Tokenization, Stopword removal, Stemming vs. Lemmatization.
+
+### D. Time-Series Data
+*   **Temporal Components:** Extracting `Hour`, `DayOfWeek`, `Month`, `Quarter`, `Is_Holiday`, `Is_Weekend`.
+*   **Lag Features:** Creating a column for "The target variable at $T-1$" to capture auto-regressive trends.
+*   **Rolling Windows:** `3-Day Moving Average`, `Rolling Standard Deviation`, `Rolling Max`.
+*   **Relative Time:** `Days Since Last Purchase`, `Days Since Account Opening`.
+
+### E. Graph & Network Data
+*   **Centrality:** PageRank, Betweenness centrality, Closeness centrality (Degree of "Importance").
+*   **Structural:** Local Clustering Coefficient, Triadic closure, Number of mutual connections.
+*   **Neighborhood:** Average degree of neighbors, Path length to a known "Bad Actor" (fraud detection).
+
+### F. Image Data (Deep Learning)
+*   **CNN Features:** Using pre-trained backbones (ResNet-50) to extract a 2048D dense vector of the image.
+*   **Augmentation (Training Prep):** Zoom, Rotate, Flip, Blur (prevents memorization of orientation).
+*   **Histogram Analysis:** Color distribution, Brightness density, Sobel edge-detection values.

@@ -81,3 +81,51 @@ What is the mathematically perfect way to sort these 4 items? **[Post A, Post B,
 **3. The Final Score (NDCG)**
 Since our model scored a 4.32 out of a maximum possible 4.76, its NDCG score is:
 **NDCG = $4.32 / 4.76 = 0.907$ (or 90.7%)**
+
+---
+
+## 7. Evaluating Stage 1 (Retrieval): Recall@K
+
+While Ranking systems (Stage 3) care about **NDCG** (the exact order), Retrieval systems (Stage 1) have a different priority: **Recall@K**.
+
+### Why Recall@K?
+The goal of the Two-Tower model is to find the ~1,000 "safe" candidates from a pool of 1 Billion. If the user's favorite post is at position **#2** or position **#999**, the Retrieval stage has succeeded equally—both items made it into the Ranker's set. 
+
+- **Recall@K**: "Out of all items the user actually liked, what percentage were included in the Top K recommendations?"
+- **Precision@K**: "Out of the Top K items we recommended, what percentage were actually liked by the user?"
+
+### How we measure it in the Code
+In [two_tower_trainer.py](file:///Users/shubhambhardwaj/Shubham/datascience/study/TwoTowerRecEngine/src/train/two_tower_trainer.py), we evaluate the model by:
+1.  **Generating Embeddings**: We calculate the 64D vectors for all test users and all test posts.
+2.  **Scoring**: For each user, we compute the dot product against every post in the test set.
+3.  **Ranking**: We sort the posts by score and check the Top 10, 20, and 50.
+4.  **Per-User Averaging**: We calculate Recall for each user independently and then take the average. This ensures a "Heavy User" with 10,000 likes doesn't skew the results for a "Casual User" with 2 likes.
+
+### The Success Criterion
+For Retrieval, a **High Recall@100** is much more important than a **High Precision@1**. We are casting a wide net; the Ranker will do the fine-sorting later.
+
+***
+
+## 8. Expert Q&A: Can we have High Precision AND High Recall?
+
+**Q: If a Two-Tower model shows 90% Precision and 90% Recall, is it the "Perfect Model"?**
+
+**A: Almost certainly NOT. In Retrieval, this is a massive Red Flag for Overfitting.**
+
+### 1. The Mathematical Imapossibility
+If you have a database of **1,000,000 posts** and a user has **10 historical likes**, and your Retrieval model returns **100 candidates**:
+- Even if the model finds **all 10 likes** (100% Recall), its precision is only $10 / 100 = 10\%$.
+- To get **90% Precision**, the model would have to return only **11 items** and be right about 10 of them. This is a **Ranking** task, not a **Retrieval** task.
+
+### 2. The Overfitting Trap (Memorization)
+If your Stage-1 model has "Perfect" Precision, it usually means it has **memorized the IDs** (e.g., User 55 $\leftrightarrow$ Post 902). 
+- It isn't learning that *"User 55 likes Sports"* or *"Post 902 is about Basketball."* 
+- It is just learning a direct mapping. 
+- When a **New Post** (Post 903) enters the system (**Cold Start**), the overfitted model will have **Zero Precision and Zero Recall** because it never "memorized" that ID.
+
+### 3. The "Filter Bubble" Effect
+If you force a Retrieval model to have high precision, it becomes **too narrow.** It will only ever suggest items that are virtually identical to what the user has already seen. This creates a "Filter Bubble" that kills user discovery and long-term engagement.
+
+**The Golden Rule:** 
+- **Retrieval (Stage 1)**: Maximize **Recall**. Be "Generous."
+- **Ranking (Stage 3)**: Maximize **Precision**. Be "Strict."

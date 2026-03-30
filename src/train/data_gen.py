@@ -85,7 +85,9 @@ class DataGenerator:
         post_cont_features = ['post_length','num_images','num_videos','num_hashtags',
                             'author_followers','author_following','author_posts_last_week']
         self.post_df[post_cont_features] = self.post_scaler.fit_transform(self.post_df[post_cont_features])
-        self.post_df = pd.get_dummies(self.post_df, columns=['post_type','post_time_hour'])
+        # EXPERT_NOTE: Stop One-Hot Encoding categorical features. 
+        # DLRM routes Sparse IDs into Embedding tables, so we just map categorical text to integers.
+        self.post_df['post_type'] = self.post_df['post_type'].map({'text':0, 'image':1, 'video':2})
 
         all_records = []
 
@@ -178,8 +180,18 @@ class DataGenerator:
         self.tower_label_test = torch.tensor(self.test_df['label'].to_numpy(dtype=np.float32))
         self.mhead_label_test = torch.tensor(self.test_df[label_cols].to_numpy(dtype=np.float32))
 
-    def serialize(self, model_path="/app/models/",
-                  user_scaler_path="/app/models/user_scaler.pkl", post_scaler_path="/app/models/post_scaler.pkl"):
+        # EXPERT_NOTE: Expose explicit DLRM arrays to cleanly feed the Ranker pipeline
+        # Dense features: Concatenate continuous user and post features
+        self.dlrm_dense_train = torch.cat([self.user_train, self.post_train], dim=1)
+        self.dlrm_dense_test = torch.cat([self.user_test, self.post_test], dim=1)
+        
+        # Sparse features: Extract ID columns as 64-bit integers for nn.Embedding
+        sparse_cols = ['user_id', 'post_id', 'post_type', 'post_time_hour']
+        self.dlrm_sparse_train = torch.tensor(self.train_df[sparse_cols].to_numpy(dtype=np.int64))
+        self.dlrm_sparse_test = torch.tensor(self.test_df[sparse_cols].to_numpy(dtype=np.int64))
+
+    def serialize(self, model_path="./models/",
+                  user_scaler_path="./models/user_scaler.pkl", post_scaler_path="./models/post_scaler.pkl"):
         """
         Serialize the model and scalers to disk. Uses self.model, self.user_scaler, self.post_scaler.
         """

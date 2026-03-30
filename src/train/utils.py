@@ -13,18 +13,22 @@ def sanitize_dataframe(df: pd.DataFrame):
     - Others → str
     """
     for col in df.columns:
+        orig = df[col].dtype
+        # Force the column to accept plain python objects so pandas doesn't implicitly cast back to numpy
+        df[col] = df[col].astype(object)
+        
         # Booleans
-        if df[col].dtype == 'bool' or df[col].dtype.name == 'boolean':
-            df[col] = df[col].astype(int).values.tolist()
+        if orig == 'bool' or getattr(orig, 'name', '') == 'boolean':
+            df[col] = [int(x) for x in df[col].to_numpy()]
         # NumPy integers
-        elif np.issubdtype(df[col].dtype, np.integer):
+        elif np.issubdtype(orig, np.integer):
             df[col] = [int(x) for x in df[col].to_numpy()]
         # NumPy floats
-        elif np.issubdtype(df[col].dtype, np.floating):
+        elif np.issubdtype(orig, np.floating):
             df[col] = [float(x) for x in df[col].to_numpy()]
         # Objects/strings
         else:
-            df[col] = df[col].astype(str).values.tolist()
+            df[col] = [str(x) for x in df[col].to_numpy()]
     return df
 
 def sanitize_regular_dataframe(df: pd.DataFrame):

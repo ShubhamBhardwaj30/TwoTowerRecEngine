@@ -1,5 +1,15 @@
 import psycopg2
 from psycopg2.extras import execute_batch
+import numpy as np
+from psycopg2.extensions import register_adapter, AsIs
+
+# EXPERT_NOTE: Globally patch psycopg2 to natively accept all NumPy primitives
+# This strictly prevents Pandas from causing 'schema np does not exist' during database inserts.
+register_adapter(np.float64, lambda x: AsIs(float(x)))
+register_adapter(np.int64, lambda x: AsIs(int(x)))
+register_adapter(np.float32, lambda x: AsIs(float(x)))
+register_adapter(np.int32, lambda x: AsIs(int(x)))
+register_adapter(np.bool_, lambda x: AsIs(bool(x)))
 
 
 class DBHelper:
